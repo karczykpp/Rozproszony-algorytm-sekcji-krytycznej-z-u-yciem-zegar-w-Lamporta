@@ -1,39 +1,110 @@
-DEMONSTRACJA DZIAŁANIA WĄTKÓW W MPI
-===================================
-Repozytorium zawiera prosty przykład projektu z użyciem wątków. Można wykorzystać ten projekt
-jako szkielet dla własnych rozwiązań.
+Przetwarzanie Rozproszone - MPI + watki + zegary Lamporta
+==========================================================
 
-Struktura:
+Projekt prezentuje symulacje rozproszona oparta o MPI i watki POSIX.
+Kazdy proces reprezentuje ogrodnika, ktory cyklicznie ubiega sie o wspoldzielone zasoby:
 
-- main.h <- makra debug oraz println, zmienne współdzielone przez wątki
-- util.h <- wysyłanie wiadomości, inicjalizacja, zmienne współdzielone używane przez funkcje z util.c
-- watek_glowny.h <- główna pętla programu. 
-- watek_komunikacyjny.h <- wątek odpowiedzialny za odbieranie wiadomości.
- 
-ZADANIE:
-=======
-Zaimplementować zegary lamporta oraz dowolny algorytm dostępu do sekcji krytycznej.
-Zaimplementować wyświetlanie zegarów w makrach println oraz debug.
-1) stworzyć zmienną globalną w jakimś pliku .c oraz zapowiedź (extern) w jakimś pliku .h
-2) zmodyfikować makra println i debug w pliku main.h by wyświetlały zegar lamporta
-3) przy wysyłaniu (sendPacket) zwiększać lokalny zegary lamporta, dołączać jako pole ts do wiadomości
-4) przy odbieraniu (wątek komunikacyjny) max( ts, lokalny zegar ) +1
-5) pamiętać o obwarowaniu dostępu do zegara lamporta muteksami
+- grabki (pojemnosc G)
+- lopatki (pojemnosc L)
+- nawoz (zmienna liczba dostepnych jednostek)
 
-UWAGA! TO JUŻ JEST:
-w struct packet_t jest już pole "ts" - to będzie timestamp.
-Trzeba dodać zmienną clock i obwarować ją muteksami.
+Dodatkowo proces o randze 0 pelni role Kupca i uzupelnia nawoz, gdy ten sie skonczy.
 
-KOMPILACJA, URUCHOMIENIE
+Glowne elementy rozwiazania
+===========================
+
+1. Zegary Lamporta
+
+- kazdy komunikat przenosi znacznik czasu ts
+- przy wysylce lokalny zegar jest inkrementowany
+- przy odbiorze stosowana jest regula:
+
+  ``lamport_clock = max(lamport_clock, pakiet.ts) + 1``
+
+- dostep do zegara i wspolnego stanu jest chroniony muteksem
+
+2. Sekcje krytyczne i kolejkowanie
+
+- dla kazdego zasobu prowadzona jest osobna kolejka zadan uporzadkowana po (timestamp, pid)
+- wejscie do sekcji krytycznej wymaga:
+
+  - odpowiedniej pozycji w kolejce (zaleznej od pojemnosci zasobu)
+  - potwierdzenia postepu logicznego od pozostalych procesow (ACK/Lamport)
+
+3. Komunikacja MPI
+
+Wykorzystywane typy komunikatow:
+
+- ``REQ_GRABKI`` / ``REL_GRABKI``
+- ``REQ_LOPATKI`` / ``REL_LOPATKI``
+- ``REQ_NAWOZ`` / ``REL_NAWOZ``
+- ``ACK``
+- ``BRAK_NAWOZU``
+- ``UZUPELNIENIE``
+
+Architektura plikow
+===================
+
+- ``main.c`` - inicjalizacja MPI, tworzenie watkow, start programu
+- ``main.h`` - makra logowania, deklaracje wspoldzielonych zmiennych
+- ``util.c`` / ``util.h`` - typy wiadomosci, kolejki, zegar Lamporta, wysylka pakietow
+- ``watek_glowny.c`` / ``watek_glowny.h`` - logika stanow procesu (REST, WAIT_*, PIELENIE, ZAKUPY)
+- ``watek_komunikacyjny.c`` / ``watek_komunikacyjny.h`` - odbior wiadomosci i aktualizacja stanu
+- ``config.txt`` - parametry symulacji (G, L, D)
+
+Konfiguracja
+============
+
+Plik ``config.txt``:
+
+.. code-block:: text
+
+    G=4
+    L=3
+    D=2
+
+Gdzie:
+
+- G - liczba jednoczesnie dostepnych grabek
+- L - liczba jednoczesnie dostepnych lopatek
+- D - poczatkowa porcja nawozu (oraz wielkosc jednego uzupelnienia)
+
+Wymagania
+=========
+
+- kompilator C (gcc/mpicc)
+- MPI (np. OpenMPI)
+- make
+- pthread (standardowo dostepny z libc na Linux/macOS)
+
+Budowanie i uruchamianie
 ========================
 
-Najprościej kompilować używając załączonego Makefile.
+.. code-block:: bash
 
-    make clean # usuwa pliki wykonywalne
+    make clean
+    make
+    make run
 
-    make # kompiluje
+Domyslnie ``make run`` uruchamia 8 procesow:
 
-    make run # uruchamia
+.. code-block:: bash
 
-Jeżeli nie działa make, może to być spowodowane brakiem polecenia ctags. W takim wypadku należy
-wykomentować regułę ctags z Makefile, albo wyrzucić ją z zależności dla reguły all
+    mpirun --mca mpi_yield_when_idle 1 -oversubscribe -np 8 ./main
+
+Aby uruchomic inna liczbe procesow, zmien parametr ``-np`` w Makefile
+lub uruchom polecenie recznie.
+
+Logi i debug
+============
+
+- ``println(...)`` wyswietla komunikaty zawsze
+- ``debug(...)`` dziala po kompilacji z flaga ``-DDEBUG``
+- logi zawieraja m.in. identyfikator procesu oraz aktualny zegar Lamporta
+
+Uwagi
+=====
+
+- Projekt jest dobrym punktem wyjscia do testowania algorytmow wzajemnego wykluczania w systemach rozproszonych.
+- Kod zaklada wspoldzielony model komunikacji oparty o komunikaty i porzadek Lamporta.
+- W razie problemow z ``ctags`` mozna usunac regule ``tags`` z Makefile lub nie wywolywac tego celu.
